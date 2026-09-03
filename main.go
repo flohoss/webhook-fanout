@@ -24,6 +24,9 @@ type config struct {
 	StackIDs   []int         `env:"STACK_IDS,notEmpty" envSeparator:","`
 	TargetBase string        `env:"TARGET_BASE,notEmpty"`
 	LogLevel   slog.Level    `env:"LOG_LEVEL,notEmpty" envDefault:"info"`
+	AppVersion string        `env:"APP_VERSION" envDefault:"dev"`
+	BuildTime  string        `env:"BUILD_TIME" envDefault:"unknown"`
+	RepoURL    string        `env:"REPO_URL" envDefault:""`
 }
 
 func webhookURLs(base string, ids []int) []string {
@@ -74,10 +77,13 @@ func main() {
 	e.GET("/health", func(c *echo.Context) error {
 		deployAt, hasDeploy := nextDeployTime()
 		body := map[string]any{
-			"status":  "ok",
-			"remote":  c.RealIP(),
-			"urls":    urls,
-			"pending": hasDeploy,
+			"status":     "ok",
+			"remote":     c.RealIP(),
+			"urls":       urls,
+			"pending":    hasDeploy,
+			"version":    cfg.AppVersion,
+			"build_time": cfg.BuildTime,
+			"repo_url":   cfg.RepoURL,
 		}
 		if hasDeploy {
 			body["next_deploy"] = deployAt.Format(time.DateTime)
