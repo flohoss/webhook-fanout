@@ -1,0 +1,211 @@
+name: Build, Push Docker Image
+
+on:
+  push:
+  workflow_dispatch:
+
+env:
+  IMAGE_NAME: ghcr.io/${{ github.repository }}
+  PLATFORM: linux/amd64,linux/arm64
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
+      id-token: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Set build variables
+        id: build-vars
+        run: |
+          # Validate tag format
+          if [[ ! "${{ github.ref_name }}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Invalid tag format: ${{ github.ref_name }}"
+            exit 1
+          fi
+
+          APP_VERSION="${{ github.ref_name }}"
+          BUILD_TIME=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
+          REPO_URL="https://github.com/${{ github.repository }}"
+
+          echo "APP_VERSION=${APP_VERSION}"
+          echo "BUILD_TIME=${BUILD_TIME}"
+          echo "REPO_URL=${REPO_URL}"
+
+          echo "APP_VERSION=${APP_VERSION}" >> $GITHUB_OUTPUT
+          echo "BUILD_TIME=${BUILD_TIME}" >> $GITHUB_OUTPUT
+          echo "REPO_URL=${REPO_URL}" >> $GITHUB_OUTPUT
+
+      - name: Generate Docker metadata
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ env.IMAGE_NAME }}
+          tags: |
+            type=semver,pattern=v{{version}}
+            type=semver,pattern=v{{major}}.{{minor}}
+            type=semver,pattern=v{{major}}
+            type=raw,value=latest
+          labels: |
+            maintainer=${{ github.actor }}
+            org.opencontainers.image.title=WebhookFanout
+            org.opencontainers.image.licenses=MIT
+            org.opencontainers.image.description=WebhookFanout - A simple webhook fanout service built with Go
+            org.opencontainers.image.vendor=${{ github.repository_owner }}
+            org.opencontainers.image.version=${{ github.ref_name }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.authors=${{ github.actor }}
+            org.opencontainers.image.url=https://github.com/${{ github.repository }}
+            org.opencontainers.image.documentation=https://github.com/${{ github.repository }}#readme
+            org.opencontainers.image.created=${{ steps.build-vars.outputs.BUILD_TIME }}
+            org.opencontainers.image.ref.name=${{ github.ref_name }}
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push Docker image
+        id: bake
+        uses: docker/bake-action@v7
+        with:
+          source: .
+          files: |
+            ./compose.yml
+            ./docker-bake.hcl
+            cwd://${{ steps.meta.outputs.bake-file-tags }}
+            cwd://${{ steps.meta.outputs.bake-file-labels }}
+            cwd://${{ steps.meta.outputs.bake-file-annotations }}
+          targets: release
+          push: true
+          provenance: true
+          sbom: true
+          set: |
+            release.platform=${{ env.PLATFORM }}
+            release.args.APP_VERSION=${{ steps.build-vars.outputs.APP_VERSION }}
+            release.args.BUILD_TIME=${{ steps.build-vars.outputs.BUILD_TIME }}
+            release.args.REPO_URL=${{ steps.build-vars.outputs.REPO_URL }}
+
+      - name: Capture Docker digest
+        env:
+          BAKE_METADATA: ${{ steps.bake.outputs.metadata }}
+        run: |
+          set -euo pipefail
+          IMAGE_DIGEST="$(jq -r '.release["containerimage.digest"] // .["containerimage.digest"] // empty' <<< "$BAKE_METADATA")"
+          if [[ -z "$IMAGE_DIGEST" ]]; then
+            echo "No image digest found in bake metadata" >&2
+            exit 1
+          fi
+          echo "IMAGE_DIGEST=${IMAGE_DIGEST}" >> "$GITHUB_ENV"
+
+      - name: Extract binaries from release image
+        env:
+          APP_VERSION: ${{ steps.build-vars.outputs.APP_VERSION }}
+          IMAGE_NAME: ${{ env.IMAGE_NAME }}
+        run: |
+          set -euo pipefail
+
+          BINARY_VERSION="${APP_VERSION#v}"
+
+          rm -rf dist
+          mkdir -p dist
+
+          extract_binary() {
+            local arch="$1"
+            local platform="linux/${arch}"
+            local binary_name="webhook-fanout_${BINARY_VERSION}_linux_${arch}"
+
+            docker pull --platform "${platform}" "${IMAGE_NAME}:${APP_VERSION}"
+            local container_id
+            container_id=$(docker create --platform "${platform}" "${IMAGE_NAME}:${APP_VERSION}")
+            docker cp "${container_id}:/src/webhook-fanout" "dist/${binary_name}"
+            docker rm -f "${container_id}" >/dev/null 2>&1 || true
+            chmod +x "dist/${binary_name}"
+          }
+
+          extract_binary amd64
+          extract_binary arm64
+
+          (cd dist && shasum -a 256 webhook-fanout_*_linux_* | sort > checksums.txt)
+
+      - name: Gather commits since last tag
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -e
+          LAST_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
+          echo "Last tag: ${LAST_TAG:-'None (first release)'}"
+
+          BASE_REF="${LAST_TAG:-$(git rev-list --max-parents=0 HEAD)}"
+          ENDPOINT="/repos/${{ github.repository }}/compare/${BASE_REF}...HEAD"
+
+          gh api "$ENDPOINT" --jq '.commits[]? | "- \(.commit.message | split("\n")[0]) ([\(.sha[0:7])](https://github.com/${{ github.repository }}/commit/\(.sha))) by @\(.author.login // .commit.author.name)"' > /tmp/commits.txt || exit 1
+
+          echo "COMMITS<<EOF" >> $GITHUB_ENV
+          cat /tmp/commits.txt >> $GITHUB_ENV
+          echo "EOF" >> $GITHUB_ENV
+
+          echo "PREVIOUS_TAG=${LAST_TAG}" >> $GITHUB_ENV
+          echo "BASE_REF=${BASE_REF}" >> $GITHUB_ENV
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v3
+        with:
+          draft: true
+          tag_name: ${{ github.ref_name }}
+          name: 'Release ${{ github.ref_name }}'
+          body: |
+            ##  Changes in This Release
+
+            ${{ env.COMMITS }}
+
+            **Full Changelog**: https://github.com/${{ github.repository }}/compare/${{ env.BASE_REF }}...${{ github.ref_name }}
+
+            ---
+
+            ## Docker Image
+
+            ```bash
+            docker pull ${{ env.IMAGE_NAME }}:${{ github.ref_name }}
+            docker pull ${{ env.IMAGE_NAME }}:latest
+            ```
+
+            ## Binary Downloads
+
+            Download one of the attached binaries extracted from the release image:
+            - `webhook-fanout_<version>_linux_amd64`
+            - `webhook-fanout_<version>_linux_arm64`
+
+            Verify with `./webhook-fanout_<version>_linux_<arch> --version`.
+
+            **Image digest:**
+            ```
+            ${{ env.IMAGE_NAME }}:${{ github.ref_name }}@${{ env.IMAGE_DIGEST }}
+            ```
+
+            ## Build Information
+
+            - **Version**: `${{ steps.build-vars.outputs.APP_VERSION }}`
+            - **Build Time**: `${{ steps.build-vars.outputs.BUILD_TIME }}`
+            - **Repository**: [${{ steps.build-vars.outputs.REPO_URL }}](${{ steps.build-vars.outputs.REPO_URL }})
+            - **Platform**: `${{ env.PLATFORM }}`
+            - **Attestations**: SLSA Provenance, SBOM
+          files: |
+            dist/webhook-fanout_*_linux_amd64
+            dist/webhook-fanout_*_linux_arm64
+            dist/checksums.txt
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

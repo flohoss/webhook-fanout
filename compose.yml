@@ -1,0 +1,51 @@
+x-build-args: &build-args
+  V_GOLANG: ${V_GOLANG:-1.27}
+  V_AIR: ${V_AIR:-1.67.4}
+
+x-images:
+  go: &go-image golang:${V_GOLANG:-1.27}
+
+services:
+  webhook-fanout:
+    build:
+      context: .
+      dockerfile: docker/dev.dockerfile
+      args: *build-args
+    command: >
+      air
+      --build.cmd "go build -o tmp/main ."
+      --build.include_ext "go"
+      --build.exclude_dir "docker, tmp"
+      --build.entrypoint "tmp/main"
+      --build.delay "100"
+      --build.stop_on_error "false"
+      --build.send_interrupt "true"
+      --build.kill_delay "5000"
+      --misc.clean_on_exit true
+    volumes:
+      - ./:/src/
+    env_file:
+      - .env
+    ports:
+      - 8080:8080
+
+  go:
+    profiles:
+      - dev
+    image: *go-image
+    working_dir: /src
+    entrypoint: go
+    volumes:
+      - ./:/src/
+
+  release:
+    profiles:
+      - build
+    build:
+      context: .
+      dockerfile: docker/release.dockerfile
+      args:
+        <<: *build-args
+        APP_VERSION: ${APP_VERSION:-dev}
+        BUILD_TIME: ${BUILD_TIME:-unknown}
+        REPO_URL: ${REPO_URL:-}
