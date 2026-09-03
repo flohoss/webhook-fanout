@@ -13,18 +13,13 @@ A small Go service that receives a webhook, debounces it, and fans it out to a l
 
 All configuration is via environment variables:
 
-| Variable         | Required |  Default  | Description                                   |
-| ---------------- | :------: | :-------: | --------------------------------------------- |
-| `WEBHOOK_SECRET` |   yes    |     —     | HMAC secret for webhook signatures and health |
-| `STACK_IDS`      |   yes    |     —     | Comma-separated stack IDs to fan out to       |
-| `TARGET_BASE`    |   yes    |     —     | Base URL, targets are `<base>/<id>/webhook`   |
-| `LOG_LEVEL`      |    no    |  `info`   | `debug`, `info`, `warn`, or `error`           |
-| `TZ`             |    no    |   `UTC`   | Timezone for log timestamps                   |
-| `APP_VERSION`    |    no    |   `dev`   | Version string reported by `/health`          |
-| `BUILD_TIME`     |    no    | `unknown` | Build timestamp reported by `/health`         |
-| `REPO_URL`       |    no    |     —     | Repository URL reported by `/health`          |
-
-See `.env.example` for a template.
+| Variable          | Required | Default | Description                                       |
+| ----------------- | :------: | :-----: | ------------------------------------------------- |
+| `WEBHOOK_SECRET`  |   yes    |    —    | HMAC secret for webhook signatures and health     |
+| `IDS`             |   yes    |    —    | Comma-separated stack IDs to fan out to (sorted)  |
+| `TARGET_TEMPLATE` |   yes    |    —    | URL template with a `{id}` placeholder per target |
+| `LOG_LEVEL`       |    no    | `info`  | `debug`, `info`, `warn`, or `error`               |
+| `TZ`              |    no    |  `UTC`  | Timezone for log timestamps                       |
 
 ## Endpoints
 
@@ -59,4 +54,4 @@ The dev service uses [air](https://github.com/air-verse/air) for hot reload.
 docker compose --profile build build release
 ```
 
-The release image is a scratch-based, non-root binary. The GitHub Actions workflow builds and pushes the image to GHCR as `:latest` on every push to the default branch. The build args `APP_VERSION`, `BUILD_TIME`, and `REPO_URL` are baked into the image as environment variables and reported by the `/health` endpoint.
+The release image is a scratch-based, non-root binary. The GitHub Actions workflow builds and pushes the image to GHCR as `:latest` on every push to the default branch.

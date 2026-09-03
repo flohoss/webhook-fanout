@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"crypto/hmac"
-	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -18,21 +17,10 @@ import (
 	"github.com/labstack/echo/v5/middleware"
 )
 
-type config struct {
-	TZ         time.Location `env:"TZ,notEmpty" envDefault:"UTC"`
-	Secret     string        `env:"WEBHOOK_SECRET,notEmpty,unset"`
-	StackIDs   []int         `env:"STACK_IDS,notEmpty" envSeparator:","`
-	TargetBase string        `env:"TARGET_BASE,notEmpty"`
-	LogLevel   slog.Level    `env:"LOG_LEVEL,notEmpty" envDefault:"info"`
-	AppVersion string        `env:"APP_VERSION" envDefault:"dev"`
-	BuildTime  string        `env:"BUILD_TIME" envDefault:"unknown"`
-	RepoURL    string        `env:"REPO_URL" envDefault:""`
-}
-
-func webhookURLs(base string, ids []int) []string {
+func webhookURLs(template string, ids []string) []string {
 	urls := make([]string, len(ids))
 	for i, id := range ids {
-		urls[i] = fmt.Sprintf("%s/%d/webhook", strings.TrimRight(base, "/"), id)
+		urls[i] = strings.ReplaceAll(template, "{id}", id)
 	}
 	return urls
 }
@@ -61,7 +49,7 @@ func main() {
 		os.Exit(1)
 	}
 	cfg = parsed
-	urls = webhookURLs(cfg.TargetBase, cfg.StackIDs)
+	urls = webhookURLs(cfg.TargetTemplate, cfg.IDs)
 
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: cfg.LogLevel}))
 	slog.SetDefault(logger)
@@ -77,13 +65,10 @@ func main() {
 	e.GET("/health", func(c *echo.Context) error {
 		deployAt, hasDeploy := nextDeployTime()
 		body := map[string]any{
-			"status":     "ok",
-			"remote":     c.RealIP(),
-			"urls":       urls,
-			"pending":    hasDeploy,
-			"version":    cfg.AppVersion,
-			"build_time": cfg.BuildTime,
-			"repo_url":   cfg.RepoURL,
+			"status":  "ok",
+			"remote":  c.RealIP(),
+			"urls":    urls,
+			"pending": hasDeploy,
 		}
 		if hasDeploy {
 			body["next_deploy"] = deployAt.Format(time.DateTime)
