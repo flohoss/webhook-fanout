@@ -63,17 +63,17 @@ func main() {
 	e.Use(middleware.RateLimiter(middleware.NewRateLimiterMemoryStore(rateLimit)))
 
 	e.GET("/health", func(c *echo.Context) error {
-		deployAt, hasDeploy := nextDeployTime()
-		body := map[string]any{
-			"status":  "ok",
-			"remote":  c.RealIP(),
-			"urls":    urls,
-			"pending": hasDeploy,
+		var pendingDeploy *string
+		if deployAt, hasDeploy := nextDeployTime(); hasDeploy {
+			formatted := deployAt.Format(time.DateTime)
+			pendingDeploy = &formatted
 		}
-		if hasDeploy {
-			body["next_deploy"] = deployAt.Format(time.DateTime)
-		}
-		return c.JSON(http.StatusOK, body)
+		return c.JSON(http.StatusOK, map[string]any{
+			"status":         "ok",
+			"remote":         c.RealIP(),
+			"urls":           urls,
+			"pending_deploy": pendingDeploy,
+		})
 	}, middleware.KeyAuth(func(c *echo.Context, key string, _ middleware.ExtractorSource) (bool, error) {
 		return hmac.Equal([]byte(key), []byte(cfg.Secret)), nil
 	}))
