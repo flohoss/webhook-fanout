@@ -47,6 +47,3 @@ services:
       dockerfile: docker/release.dockerfile
       args:
         <<: *build-args
-        APP_VERSION: ${APP_VERSION:-dev}
-        BUILD_TIME: ${BUILD_TIME:-unknown}
-        REPO_URL: ${REPO_URL:-}
