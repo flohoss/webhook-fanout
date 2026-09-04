@@ -79,7 +79,7 @@ func (f *Fanout) HandleHealth(c *echo.Context) error {
 	return c.JSON(http.StatusOK, map[string]any{
 		"status":         "ok",
 		"remote":         c.RealIP(),
-		"targets":        len(f.cfg.IDs),
+		"targets":        f.cfg.TargetURLs(),
 		"pending_deploy": pendingDeploy,
 	})
 }

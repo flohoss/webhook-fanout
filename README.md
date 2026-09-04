@@ -55,7 +55,7 @@ Health and status endpoint. Requires the secret as a bearer token:
 curl -H "Authorization: Bearer $WEBHOOK_SECRET" http://localhost:8080/health
 ```
 
-Returns the remote IP, the number of configured targets, whether a deploy is pending, and the next deploy time.
+Returns the service status, the remote IP, the list of target URLs, and the next deploy time (`null` when no deploy is pending).
 
 ## Examples
 
