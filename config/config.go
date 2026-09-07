@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/url"
+	"regexp"
 	"slices"
 	"strings"
 	"time"
@@ -64,11 +65,33 @@ func (t Template) targetURLs(ids []string) []string {
 	return urls
 }
 
+type AcceptRegex struct {
+	re *regexp.Regexp
+}
+
+func (a *AcceptRegex) UnmarshalText(text []byte) error {
+	if len(text) == 0 {
+		a.re = nil
+		return nil
+	}
+	re, err := regexp.Compile(string(text))
+	if err != nil {
+		return fmt.Errorf("ACCEPT_REGEX %q is not a valid regex: %w", text, err)
+	}
+	a.re = re
+	return nil
+}
+
+func (a AcceptRegex) Matches(body []byte) bool {
+	return a.re == nil || a.re.Match(body)
+}
+
 type Config struct {
 	TZ              time.Location `env:"TZ,notEmpty" envDefault:"UTC"`
 	Secret          string        `env:"WEBHOOK_SECRET,notEmpty,unset"`
 	IDs             IDs           `env:"IDS,notEmpty"`
 	TargetTemplate  Template      `env:"TARGET_TEMPLATE,notEmpty"`
+	AcceptRegex     AcceptRegex   `env:"ACCEPT_REGEX"`
 	LogLevel        slog.Level    `env:"LOG_LEVEL,notEmpty" envDefault:"info"`
 	ListenAddr      string        `env:"LISTEN_ADDR,notEmpty" envDefault:"0.0.0.0:8080"`
 	Debounce        time.Duration `env:"DEBOUNCE,notEmpty" envDefault:"5m"`

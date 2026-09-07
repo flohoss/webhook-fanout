@@ -58,6 +58,11 @@ func (f *Fanout) HandleWebhook(c *echo.Context) error {
 		return echo.NewHTTPError(http.StatusUnauthorized, "invalid signature")
 	}
 
+	if !f.cfg.AcceptRegex.Matches(body) {
+		f.logger.Info("webhook ignored", "remote", c.RealIP())
+		return c.JSON(http.StatusAccepted, map[string]any{"ignored": true})
+	}
+
 	deployAt := time.Now().Add(f.cfg.Debounce)
 	f.schedule(body)
 

@@ -18,6 +18,7 @@ All configuration is via environment variables:
 | `WEBHOOK_SECRET`   |   yes    |       —        | HMAC secret for webhook signatures and health                                      |
 | `IDS`              |   yes    |       —        | Comma-separated stack IDs to fan out to (sorted)                                   |
 | `TARGET_TEMPLATE`  |   yes    |       —        | Absolute URL template; `{id}` segment is stripped for listening, filled per target |
+| `ACCEPT_REGEX`     |    no    |       —        | Only fan out when the payload matches this regex (empty = accept everything)       |
 | `LOG_LEVEL`        |    no    |     `info`     | `debug`, `info`, `warn`, or `error`                                                |
 | `TZ`               |    no    |     `UTC`      | Timezone for log timestamps                                                        |
 | `LISTEN_ADDR`      |    no    | `0.0.0.0:8080` | Address the HTTP server listens on                                                 |
@@ -31,6 +32,18 @@ All configuration is via environment variables:
 | `MAX_CONCURRENT`   |    no    |      `8`       | Max concurrent target deliveries                                                   |
 
 Durations use Go syntax (`500ms`, `15s`, `5m`).
+
+## Filtering
+
+`ACCEPT_REGEX` is an allowlist: when set, a webhook is only scheduled for fan-out if its raw body matches the regex. Non-matching payloads are acknowledged with `202` and `{"ignored": true}` but never scheduled. When unset or empty, every verified webhook is accepted.
+
+This is useful when a provider fires multiple webhooks per change but only one should trigger a deploy. For example, GitHub sends a `push` webhook for the Renovate branch creation, the branch deletion after merge, and the merge to `main` — only the actual merge should deploy:
+
+```bash
+ACCEPT_REGEX='"head_commit":{"id":[^}]*"message":\s*"Merge pull request'
+```
+
+The regex is matched against the raw JSON body (Go RE2 syntax). Note that a squash merge whose PR title does not start with `Merge pull request` will not match; anchor on `"ref": "refs/heads/main"` instead if you use custom merge titles.
 
 ## Endpoints
 
