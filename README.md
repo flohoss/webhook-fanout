@@ -23,13 +23,13 @@ All configuration is via environment variables:
 | `TZ`               |    no    |     `UTC`      | Timezone for log timestamps                                                        |
 | `LISTEN_ADDR`      |    no    | `0.0.0.0:8080` | Address the HTTP server listens on                                                 |
 | `DEBOUNCE`         |    no    |      `5m`      | Debounce window before fan-out                                                     |
-| `REQUEST_TIMEOUT`  |    no    |     `15s`      | Timeout per target delivery attempt                                                |
+| `REQUEST_TIMEOUT`  |    no    |     `30s`      | Timeout per target delivery attempt                                                |
 | `MAX_BODY_BYTES`   |    no    |   `1048576`    | Max webhook body size (1 MiB)                                                      |
 | `MAX_ATTEMPTS`     |    no    |      `4`       | Delivery attempts per target (incl. first)                                         |
 | `RETRY_BACKOFF`    |    no    |    `500ms`     | Initial backoff between attempts (doubles)                                         |
 | `SHUTDOWN_TIMEOUT` |    no    |     `10s`      | Graceful shutdown timeout                                                          |
 | `RATE_LIMIT`       |    no    |      `10`      | Requests per second per IP                                                         |
-| `MAX_CONCURRENT`   |    no    |      `8`       | Max concurrent target deliveries                                                   |
+| `MAX_CONCURRENT`   |    no    |      `4`       | Max concurrent target deliveries                                                   |
 
 Durations use Go syntax (`500ms`, `15s`, `5m`).
 

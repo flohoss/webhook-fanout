@@ -95,13 +95,13 @@ type Config struct {
 	LogLevel        slog.Level    `env:"LOG_LEVEL,notEmpty" envDefault:"info"`
 	ListenAddr      string        `env:"LISTEN_ADDR,notEmpty" envDefault:"0.0.0.0:8080"`
 	Debounce        time.Duration `env:"DEBOUNCE,notEmpty" envDefault:"5m"`
-	RequestTimeout  time.Duration `env:"REQUEST_TIMEOUT,notEmpty" envDefault:"15s"`
+	RequestTimeout  time.Duration `env:"REQUEST_TIMEOUT,notEmpty" envDefault:"30s"`
 	MaxBodyBytes    int64         `env:"MAX_BODY_BYTES,notEmpty" envDefault:"1048576"`
 	MaxAttempts     int           `env:"MAX_ATTEMPTS,notEmpty" envDefault:"4"`
 	RetryBackoff    time.Duration `env:"RETRY_BACKOFF,notEmpty" envDefault:"500ms"`
 	ShutdownTimeout time.Duration `env:"SHUTDOWN_TIMEOUT,notEmpty" envDefault:"10s"`
 	RateLimit       float64       `env:"RATE_LIMIT,notEmpty" envDefault:"10"`
-	MaxConcurrent   int           `env:"MAX_CONCURRENT,notEmpty" envDefault:"8"`
+	MaxConcurrent   int           `env:"MAX_CONCURRENT,notEmpty" envDefault:"4"`
 }
 
 func (c Config) ListenPath() string {
