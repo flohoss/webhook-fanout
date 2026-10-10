@@ -1,35 +1,37 @@
 # webhook-fanout
 
-A small Go service that receives a webhook, debounces it, and fans it out to a list of target webhook URLs.
+A small Go service that receives a webhook, debounces it, and fans it out to every Dockhand stack that has webhooks enabled. It is tailored to Dockhand's Git webhook API — the target list is looked up at fire time, so there is no static ID list to maintain.
 
 ## How it works
 
-1. A webhook arrives at the listen path derived from `TARGET_TEMPLATE` — the template with its `/{id}` segment removed.
-2. The payload is verified against the `X-Hub-Signature-256` HMAC header.
+1. A webhook arrives at the fixed listen path `POST /api/git/stacks/webhook`.
+2. The payload is verified against the `X-Hub-Signature-256` HMAC header using `FANOUT_SECRET`.
 3. The payload is scheduled for delivery after a debounce window (default `5m`). New webhooks reset the timer.
-4. When the timer fires, the payload is POSTed to every target URL concurrently, with retries on failure.
+4. When the timer fires, the service calls `GET {DOCKHAND_URL}/api/git/stacks` and keeps entries where `webhookEnabled=true`.
+5. The payload is POSTed concurrently to `{DOCKHAND_URL}/api/git/stacks/<id>/webhook` for each enabled stack, signed with that stack's own `webhookSecret`. Failures are retried.
 
 ## Configuration
 
 All configuration is via environment variables:
 
-| Variable           | Required |    Default     | Description                                                                        |
-| ------------------ | :------: | :------------: | ---------------------------------------------------------------------------------- |
-| `WEBHOOK_SECRET`   |   yes    |       —        | HMAC secret for webhook signatures and health                                      |
-| `IDS`              |   yes    |       —        | Comma-separated stack IDs to fan out to (sorted)                                   |
-| `TARGET_TEMPLATE`  |   yes    |       —        | Absolute URL template; `{id}` segment is stripped for listening, filled per target |
-| `ACCEPT_REGEX`     |    no    |       —        | Only fan out when the payload matches this regex (empty = accept everything)       |
-| `LOG_LEVEL`        |    no    |     `info`     | `debug`, `info`, `warn`, or `error`                                                |
-| `TZ`               |    no    |     `UTC`      | Timezone for log timestamps                                                        |
-| `LISTEN_ADDR`      |    no    | `0.0.0.0:8080` | Address the HTTP server listens on                                                 |
-| `DEBOUNCE`         |    no    |      `5m`      | Debounce window before fan-out                                                     |
-| `REQUEST_TIMEOUT`  |    no    |     `30s`      | Timeout per target delivery attempt                                                |
-| `MAX_BODY_BYTES`   |    no    |   `1048576`    | Max webhook body size (1 MiB)                                                      |
-| `MAX_ATTEMPTS`     |    no    |      `4`       | Delivery attempts per target (incl. first)                                         |
-| `RETRY_BACKOFF`    |    no    |    `500ms`     | Initial backoff between attempts (doubles)                                         |
-| `SHUTDOWN_TIMEOUT` |    no    |     `10s`      | Graceful shutdown timeout                                                          |
-| `RATE_LIMIT`       |    no    |      `10`      | Requests per second per IP                                                         |
-| `MAX_CONCURRENT`   |    no    |      `4`       | Max concurrent target deliveries                                                   |
+| Variable             | Required |    Default     | Description                                                                  |
+| -------------------- | :------: | :------------: | ---------------------------------------------------------------------------- |
+| `FANOUT_SECRET`      |   yes    |       —        | HMAC secret used to verify incoming webhooks                                 |
+| `TRUSTED_PROXY`      |   yes    |       —        | Trusted proxy IP or CIDR whose X-Forwarded-For header is honored             |
+| `DOCKHAND_URL`       |   yes    |       —        | Base URL of the Dockhand API, e.g. `http://100.99.100.64:3000`               |
+| `DOCKHAND_API_TOKEN` |   yes    |       —        | Bearer token sent when calling `GET {DOCKHAND_URL}/api/git/stacks`           |
+| `ACCEPT_REGEX`       |    no    |       —        | Only fan out when the payload matches this regex (empty = accept everything) |
+| `LOG_LEVEL`          |    no    |     `info`     | `debug`, `info`, `warn`, or `error`                                          |
+| `TZ`                 |    no    |     `UTC`      | Timezone for log timestamps                                                  |
+| `LISTEN_ADDR`        |    no    | `0.0.0.0:8080` | Address the HTTP server listens on                                           |
+| `DEBOUNCE`           |    no    |      `5m`      | Debounce window before fan-out                                               |
+| `REQUEST_TIMEOUT`    |    no    |     `30s`      | Timeout per target delivery attempt                                          |
+| `MAX_BODY_BYTES`     |    no    |   `1048576`    | Max webhook body size (1 MiB)                                                |
+| `MAX_ATTEMPTS`       |    no    |      `4`       | Delivery attempts per target (incl. first)                                   |
+| `RETRY_BACKOFF`      |    no    |    `500ms`     | Initial backoff between attempts (doubles)                                   |
+| `SHUTDOWN_TIMEOUT`   |    no    |     `10s`      | Graceful shutdown timeout                                                    |
+| `RATE_LIMIT`         |    no    |      `10`      | Requests per second per IP                                                   |
+| `MAX_CONCURRENT`     |    no    |      `4`       | Max concurrent target deliveries                                             |
 
 Durations use Go syntax (`500ms`, `15s`, `5m`).
 
@@ -47,42 +49,21 @@ The regex is matched against the raw JSON body (Go RE2 syntax). Note that a squa
 
 ## Endpoints
 
-### `POST <listen path>`
+### `POST /api/git/stacks/webhook`
 
-The listen path is `TARGET_TEMPLATE`'s URL path with the `/{id}` segment removed:
-
-| `TARGET_TEMPLATE`                                       | Listens on                     |
-| ------------------------------------------------------- | ------------------------------ |
-| `https://hooks.example.com/api/git/stacks/{id}/webhook` | `POST /api/git/stacks/webhook` |
-| `https://hooks.example.com/webhook/{id}`                | `POST /webhook`                |
-
-Accepts the webhook payload. Requires a valid `X-Hub-Signature-256` header (GitHub-style HMAC-SHA256 of the body using `WEBHOOK_SECRET`).
+Accepts the webhook payload. Requires a valid `X-Hub-Signature-256` header (GitHub-style HMAC-SHA256 of the body using `FANOUT_SECRET`).
 
 Returns `202 Accepted` with the scheduled deploy time.
 
-### `GET /health`
+## Example
 
-Health and status endpoint. Requires the secret as a bearer token:
-
-```bash
-curl -H "Authorization: Bearer $WEBHOOK_SECRET" http://localhost:8080/health
-```
-
-Returns the service status, the remote IP, the list of target URLs, and the next deploy time (`null` when no deploy is pending).
-
-## Examples
-
-With `TARGET_TEMPLATE=https://dockhand.example.com/api/git/stacks/{id}/webhook` and `IDS=42,43`:
+With `DOCKHAND_URL=http://100.99.100.64:3000`:
 
 - Listens on `POST /api/git/stacks/webhook`
-- Delivers to `https://dockhand.example.com/api/git/stacks/42/webhook` and `https://dockhand.example.com/api/git/stacks/43/webhook`
+- At fire time, fetches stacks from `http://100.99.100.64:3000/api/git/stacks` and delivers to `http://100.99.100.64:3000/api/git/stacks/<id>/webhook` for every stack where `webhookEnabled=true` — e.g. `.../stacks/42/webhook` and `.../stacks/43/webhook`.
+- Each delivery is signed with the target stack's own `webhookSecret`.
 
-With `TARGET_TEMPLATE=https://dockhand.example.com/webhook/{id}` and `IDS=a,b`:
-
-- Listens on `POST /webhook`
-- Delivers to `https://dockhand.example.com/webhook/a` and `https://dockhand.example.com/webhook/b`
-
-The derived listen path is logged at startup ("listen" attribute).
+The listen path is fixed and logged at startup ("listen" attribute).
 
 ## Development
 

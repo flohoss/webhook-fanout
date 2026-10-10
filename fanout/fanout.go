@@ -2,6 +2,7 @@ package fanout
 
 import (
 	"bytes"
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
@@ -27,8 +28,6 @@ type Fanout struct {
 	mu             sync.Mutex
 	timer          *time.Timer
 	pendingPayload []byte
-	pending        bool
-	nextDeploy     time.Time
 }
 
 func New(cfg config.Config, logger *slog.Logger) *Fanout {
@@ -53,7 +52,7 @@ func (f *Fanout) HandleWebhook(c *echo.Context) error {
 	}
 
 	got, ok := strings.CutPrefix(strings.ToLower(c.Request().Header.Get("X-Hub-Signature-256")), "sha256=")
-	if !ok || !hmac.Equal([]byte(got), []byte(f.hmacSHA256(body))) {
+	if !ok || !hmac.Equal([]byte(got), []byte(f.hmacSHA256(f.cfg.Secret, body))) {
 		f.logger.Warn("invalid webhook signature", "remote", c.RealIP())
 		return echo.NewHTTPError(http.StatusUnauthorized, "invalid signature")
 	}
@@ -75,55 +74,31 @@ func (f *Fanout) HandleWebhook(c *echo.Context) error {
 	})
 }
 
-func (f *Fanout) HandleHealth(c *echo.Context) error {
-	var pendingDeploy *string
-	if deployAt, hasDeploy := f.nextDeployTime(); hasDeploy {
-		formatted := deployAt.Format(time.DateTime)
-		pendingDeploy = &formatted
-	}
-	return c.JSON(http.StatusOK, map[string]any{
-		"status":         "ok",
-		"remote":         c.RealIP(),
-		"targets":        f.cfg.TargetURLs(),
-		"pending_deploy": pendingDeploy,
-	})
-}
-
 func (f *Fanout) DropPending() {
 	f.mu.Lock()
 	if f.timer != nil {
 		f.timer.Stop()
 	}
-	f.pendingPayload, f.pending = nil, false
-	f.nextDeploy = time.Time{}
+	f.pendingPayload = nil
 	f.mu.Unlock()
-}
-
-func (f *Fanout) nextDeployTime() (time.Time, bool) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return f.nextDeploy, f.pending
 }
 
 func (f *Fanout) schedule(payload []byte) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.pendingPayload = payload
-	f.nextDeploy = time.Now().Add(f.cfg.Debounce)
 	if f.timer == nil {
 		f.timer = time.AfterFunc(f.cfg.Debounce, f.firePending)
 	} else {
 		f.timer.Reset(f.cfg.Debounce)
 		f.logger.Debug("debounce timer reset")
 	}
-	f.pending = true
 }
 
 func (f *Fanout) firePending() {
 	f.mu.Lock()
 	payload := f.pendingPayload
-	f.pendingPayload, f.pending = nil, false
-	f.nextDeploy = time.Time{}
+	f.pendingPayload = nil
 	f.mu.Unlock()
 	if payload != nil {
 		f.deliver(payload)
@@ -132,16 +107,27 @@ func (f *Fanout) firePending() {
 
 func (f *Fanout) deliver(payload []byte) {
 	start := time.Now()
+
+	urls, err := f.fetchEnabledTargets(context.Background())
+	if err != nil {
+		f.logger.Error("stacks lookup failed, skipping fan-out", "err", err)
+		return
+	}
+	if len(urls) == 0 {
+		f.logger.Warn("no enabled stacks, skipping fan-out")
+		return
+	}
+
 	var wg sync.WaitGroup
 	var ok atomic.Int64
 	sem := make(chan struct{}, f.cfg.MaxConcurrent)
 
-	for _, url := range f.cfg.TargetURLs() {
+	for _, t := range urls {
 		sem <- struct{}{}
 		wg.Go(func() {
 			defer func() { <-sem }()
-			if err := f.postWithRetry(url, payload); err != nil {
-				f.logger.Error("webhook-fanout failed", "url", url, "err", err)
+			if err := f.postWithRetry(t, payload); err != nil {
+				f.logger.Error("webhook-fanout failed", "url", t.url, "err", err)
 				return
 			}
 			ok.Add(1)
@@ -151,12 +137,12 @@ func (f *Fanout) deliver(payload []byte) {
 
 	f.logger.Info("fan-out finished",
 		"success", ok.Load(),
-		"total", len(f.cfg.IDs),
+		"total", len(urls),
 		"duration", time.Since(start).Round(time.Millisecond),
 	)
 }
 
-func (f *Fanout) postWithRetry(url string, payload []byte) error {
+func (f *Fanout) postWithRetry(t target, payload []byte) error {
 	delay := f.cfg.RetryBackoff
 	for attempt := range f.cfg.MaxAttempts {
 		if attempt > 0 {
@@ -164,35 +150,35 @@ func (f *Fanout) postWithRetry(url string, payload []byte) error {
 			delay *= 2
 		}
 
-		req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(payload))
+		req, err := http.NewRequest(http.MethodPost, t.url, bytes.NewReader(payload))
 		if err != nil {
 			return err
 		}
 		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("X-Hub-Signature-256", "sha256="+f.hmacSHA256(payload))
+		req.Header.Set("X-Hub-Signature-256", "sha256="+f.hmacSHA256(t.secret, payload))
 
 		resp, err := f.client.Do(req)
 		if err != nil {
-			f.logger.Error("webhook-fanout attempt network error", "url", url, "attempt", attempt+1, "err", err)
+			f.logger.Error("webhook-fanout attempt network error", "url", t.url, "attempt", attempt+1, "err", err)
 			continue
 		}
 		_, _ = io.Copy(io.Discard, resp.Body)
 		resp.Body.Close()
 
-		f.logger.Info("webhook-fanout delivery", "url", url, "status", resp.StatusCode, "attempt", attempt+1)
+		f.logger.Info("webhook-fanout delivery", "url", t.url, "status", resp.StatusCode, "attempt", attempt+1)
 		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 			return nil
 		}
 		if resp.StatusCode >= 400 && resp.StatusCode < 500 {
 			return fmt.Errorf("definitive client error: HTTP %d", resp.StatusCode)
 		}
-		f.logger.Error("webhook-fanout attempt non-definitive status", "url", url, "status", resp.StatusCode, "attempt", attempt+1)
+		f.logger.Error("webhook-fanout attempt non-definitive status", "url", t.url, "status", resp.StatusCode, "attempt", attempt+1)
 	}
-	return fmt.Errorf("exhausted %d attempts for %s", f.cfg.MaxAttempts, url)
+	return fmt.Errorf("exhausted %d attempts for %s", f.cfg.MaxAttempts, t.url)
 }
 
-func (f *Fanout) hmacSHA256(payload []byte) string {
-	mac := hmac.New(sha256.New, []byte(f.cfg.Secret))
+func (f *Fanout) hmacSHA256(secret string, payload []byte) string {
+	mac := hmac.New(sha256.New, []byte(secret))
 	mac.Write(payload)
 	return hex.EncodeToString(mac.Sum(nil))
 }

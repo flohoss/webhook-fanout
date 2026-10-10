@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"crypto/hmac"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -25,29 +24,20 @@ func main() {
 
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: cfg.LogLevel}))
 	slog.SetDefault(logger)
-	slog.Info("webhook-fanout configured",
-		"listen", cfg.ListenPath(),
-		"template", cfg.TargetTemplate,
-		"targets", len(cfg.IDs),
-	)
 
 	f := fanout.New(cfg, logger)
+	slog.Info("webhook-fanout configured", "listen", config.ListenPath, "dockhand", cfg.Dockhand)
 
 	e := echo.NewWithConfig(echo.Config{
 		Logger:      logger,
-		IPExtractor: echo.ExtractIPFromXFFHeader(),
+		IPExtractor: echo.ExtractIPFromXFFHeader(echo.TrustIPRange(cfg.TrustedProxy.IPNet())),
 	})
 	e.Use(middleware.Recover())
 	e.Use(middleware.RateLimiter(middleware.NewRateLimiterMemoryStore(cfg.RateLimit)))
 
-	e.GET("/health", f.HandleHealth, middleware.KeyAuth(func(c *echo.Context, key string, _ middleware.ExtractorSource) (bool, error) {
-		return hmac.Equal([]byte(key), []byte(cfg.Secret)), nil
-	}))
-	e.POST(cfg.ListenPath(), f.HandleWebhook,
-		middleware.BodyLimit(cfg.MaxBodyBytes),
-	)
+	e.POST(config.ListenPath, f.HandleWebhook, middleware.BodyLimit(cfg.MaxBodyBytes))
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, os.Kill, syscall.SIGTERM)
 	defer stop()
 
 	if err := (echo.StartConfig{
