@@ -8,7 +8,7 @@ A small Go service that receives a webhook, debounces it, and fans it out to eve
 2. The payload is verified against the `X-Hub-Signature-256` HMAC header using `FANOUT_SECRET`.
 3. The payload is scheduled for delivery after a debounce window (default `5m`). New webhooks reset the timer.
 4. When the timer fires, the service calls `GET {DOCKHAND_URL}/api/git/stacks` and keeps entries where `webhookEnabled=true`.
-5. The payload is POSTed concurrently to `{DOCKHAND_URL}/api/git/stacks/<id>/webhook` for each enabled stack, signed with that stack's own `webhookSecret`. Failures are retried.
+5. The payload is POSTed concurrently to `{DOCKHAND_URL}/api/git/stacks/<id>/webhook` for each enabled stack, signed with `FANOUT_SECRET`. Every target stack must use the same value as its webhook secret, because Dockhand's API no longer exposes per-stack secrets. Failures are retried.
 
 ## Configuration
 
@@ -16,7 +16,7 @@ All configuration is via environment variables:
 
 | Variable             | Required |    Default     | Description                                                                  |
 | -------------------- | :------: | :------------: | ---------------------------------------------------------------------------- |
-| `FANOUT_SECRET`      |   yes    |       —        | HMAC secret used to verify incoming webhooks                                 |
+| `FANOUT_SECRET`      |   yes    |       —        | HMAC secret for incoming webhooks and outgoing fan-out signing               |
 | `TRUSTED_PROXY`      |   yes    |       —        | Trusted proxy IP or CIDR whose X-Forwarded-For header is honored             |
 | `DOCKHAND_URL`       |   yes    |       —        | Base URL of the Dockhand API, e.g. `http://100.99.100.64:3000`               |
 | `DOCKHAND_API_TOKEN` |   yes    |       —        | Bearer token sent when calling `GET {DOCKHAND_URL}/api/git/stacks`           |
@@ -34,6 +34,8 @@ All configuration is via environment variables:
 | `MAX_CONCURRENT`     |    no    |      `4`       | Max concurrent target deliveries                                             |
 
 Durations use Go syntax (`500ms`, `15s`, `5m`).
+
+`FANOUT_SECRET` is used in both directions: it verifies the incoming webhook and signs each fan-out request. Set the same value as the webhook secret of every Dockhand stack that should accept the fan-out, since Dockhand only reports `hasWebhookSecret` and never returns the stored secret.
 
 ## Filtering
 
@@ -61,7 +63,7 @@ With `DOCKHAND_URL=http://100.99.100.64:3000`:
 
 - Listens on `POST /api/git/stacks/webhook`
 - At fire time, fetches stacks from `http://100.99.100.64:3000/api/git/stacks` and delivers to `http://100.99.100.64:3000/api/git/stacks/<id>/webhook` for every stack where `webhookEnabled=true` — e.g. `.../stacks/42/webhook` and `.../stacks/43/webhook`.
-- Each delivery is signed with the target stack's own `webhookSecret`.
+- Each delivery is signed with `FANOUT_SECRET`.
 
 The listen path is fixed and logged at startup ("listen" attribute).
 

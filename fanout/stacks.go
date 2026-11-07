@@ -9,15 +9,8 @@ import (
 )
 
 type stack struct {
-	ID             int    `json:"id"`
-	WebhookEnabled bool   `json:"webhookEnabled"`
-	WebhookSecret  string `json:"webhookSecret"`
-}
-
-type target struct {
-	id     string
-	url    string
-	secret string
+	ID             int  `json:"id"`
+	WebhookEnabled bool `json:"webhookEnabled"`
 }
 
 func (f *Fanout) fetchStacks(ctx context.Context) ([]stack, error) {
@@ -45,21 +38,19 @@ func (f *Fanout) fetchStacks(ctx context.Context) ([]stack, error) {
 	return stacks, nil
 }
 
-func (f *Fanout) fetchEnabledTargets(ctx context.Context) ([]target, error) {
+func (f *Fanout) fetchEnabledWebhookURLs(ctx context.Context) ([]string, error) {
 	stacks, err := f.fetchStacks(ctx)
 	if err != nil {
 		return nil, err
 	}
 
-	targets := make([]target, 0, len(stacks))
+	urls := make([]string, 0, len(stacks))
 	for _, s := range stacks {
-		if !s.WebhookEnabled {
-			continue
+		if s.WebhookEnabled {
+			urls = append(urls, f.cfg.Dockhand.WebhookURL(strconv.Itoa(s.ID)))
 		}
-		id := strconv.Itoa(s.ID)
-		targets = append(targets, target{id: id, url: f.cfg.Dockhand.WebhookURL(id), secret: s.WebhookSecret})
 	}
 
-	f.logger.Info("stacks resolved", "enabled", len(targets), "total", len(stacks))
-	return targets, nil
+	f.logger.Info("stacks resolved", "enabled", len(urls), "total", len(stacks))
+	return urls, nil
 }

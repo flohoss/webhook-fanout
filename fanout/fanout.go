@@ -108,7 +108,7 @@ func (f *Fanout) firePending() {
 func (f *Fanout) deliver(payload []byte) {
 	start := time.Now()
 
-	urls, err := f.fetchEnabledTargets(context.Background())
+	urls, err := f.fetchEnabledWebhookURLs(context.Background())
 	if err != nil {
 		f.logger.Error("stacks lookup failed, skipping fan-out", "err", err)
 		return
@@ -121,13 +121,14 @@ func (f *Fanout) deliver(payload []byte) {
 	var wg sync.WaitGroup
 	var ok atomic.Int64
 	sem := make(chan struct{}, f.cfg.MaxConcurrent)
+	signature := "sha256=" + f.hmacSHA256(f.cfg.Secret, payload)
 
-	for _, t := range urls {
+	for _, url := range urls {
 		sem <- struct{}{}
 		wg.Go(func() {
 			defer func() { <-sem }()
-			if err := f.postWithRetry(t, payload); err != nil {
-				f.logger.Error("webhook-fanout failed", "url", t.url, "err", err)
+			if err := f.postWithRetry(url, payload, signature); err != nil {
+				f.logger.Error("webhook-fanout failed", "url", url, "err", err)
 				return
 			}
 			ok.Add(1)
@@ -142,7 +143,7 @@ func (f *Fanout) deliver(payload []byte) {
 	)
 }
 
-func (f *Fanout) postWithRetry(t target, payload []byte) error {
+func (f *Fanout) postWithRetry(url string, payload []byte, signature string) error {
 	delay := f.cfg.RetryBackoff
 	for attempt := range f.cfg.MaxAttempts {
 		if attempt > 0 {
@@ -150,31 +151,31 @@ func (f *Fanout) postWithRetry(t target, payload []byte) error {
 			delay *= 2
 		}
 
-		req, err := http.NewRequest(http.MethodPost, t.url, bytes.NewReader(payload))
+		req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(payload))
 		if err != nil {
 			return err
 		}
 		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("X-Hub-Signature-256", "sha256="+f.hmacSHA256(t.secret, payload))
+		req.Header.Set("X-Hub-Signature-256", signature)
 
 		resp, err := f.client.Do(req)
 		if err != nil {
-			f.logger.Error("webhook-fanout attempt network error", "url", t.url, "attempt", attempt+1, "err", err)
+			f.logger.Error("webhook-fanout attempt network error", "url", url, "attempt", attempt+1, "err", err)
 			continue
 		}
 		_, _ = io.Copy(io.Discard, resp.Body)
 		resp.Body.Close()
 
-		f.logger.Info("webhook-fanout delivery", "url", t.url, "status", resp.StatusCode, "attempt", attempt+1)
+		f.logger.Info("webhook-fanout delivery", "url", url, "status", resp.StatusCode, "attempt", attempt+1)
 		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 			return nil
 		}
 		if resp.StatusCode >= 400 && resp.StatusCode < 500 {
 			return fmt.Errorf("definitive client error: HTTP %d", resp.StatusCode)
 		}
-		f.logger.Error("webhook-fanout attempt non-definitive status", "url", t.url, "status", resp.StatusCode, "attempt", attempt+1)
+		f.logger.Error("webhook-fanout attempt non-definitive status", "url", url, "status", resp.StatusCode, "attempt", attempt+1)
 	}
-	return fmt.Errorf("exhausted %d attempts for %s", f.cfg.MaxAttempts, t.url)
+	return fmt.Errorf("exhausted %d attempts for %s", f.cfg.MaxAttempts, url)
 }
 
 func (f *Fanout) hmacSHA256(secret string, payload []byte) string {
